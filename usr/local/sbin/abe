@@ -1,0 +1,91 @@
+#!/bin/sh
+
+# After Boot Executor
+# Copyright (C) 2009-10 Przemyslaw Pawelczyk <przemoc@gmail.com>
+
+TASKS_DIR=/tasks
+LOG=/var/log/abe
+INITIAL_SLEEP=10
+PREREBOOT_SLEEP=10
+SLEEP_BETWEEN_TASKS=1
+
+GRUB_MENU=/boot/grub/menu.lst
+KREL=$(uname -r)
+#LOG_FORMAT="+%b %e %T $HOSTNAME $0[$$]"
+LOG_FORMAT="+%b %e %T $KREL"
+
+set -e
+
+function log() {
+	date "$LOG_FORMAT: $*" | tee -a $LOG
+}
+
+function sigint_handler() {
+	log "Interrupted"
+	exit 0
+}
+
+function sigterm_handler() {
+	log "Terminated"
+	exit 0
+}
+
+trap sigint_handler SIGINT
+trap sigterm_handler SIGTERM
+
+log "Activating in $INITIAL_SLEEP seconds"
+
+sleep $INITIAL_SLEEP
+
+mkdir -p "$TASKS_DIR"/{success,failure,skipped,pending}
+
+cd "$TASKS_DIR"
+
+I=1
+for TASK in $(ls -1 pending/); do
+	if [ -d "pending/$TASK" -o ! -x "pending/$TASK" ]; then
+		continue
+	fi
+	mv pending/$TASK ./
+	REQ_KREL=$(awk 'NR==1{if($1~/abe-run$/)print $2;else print "any";exit;}' $TASK)
+	if [ -z "$REQ_KREL" ]; then
+		log "Task $TASK has improper format - skipping"
+		mv $TASK skipped/
+		continue
+	fi
+	if [ "$REQ_KREL" == "run-as-first-task" ]; then
+		if [ "$I" -ne "1" ]; then
+			log "Task $TASK needs to be executed as a first one - rebooting in $PREREBOOT_SLEEP seconds"
+			mv $TASK pending/
+			sleep $PREREBOOT_SLEEP
+			reboot
+			exit 0
+		fi
+	elif [ "$REQ_KREL" != "$KREL" -a "$REQ_KREL" != "any" ]; then
+		REQ_KREL_REGEX="$(echo $REQ_KREL | sed 's/\./\\./g;s/+/\\+/g')"
+		ENTRY=$(grep '^title' "$GRUB_MENU" | awk "/$REQ_KREL_REGEX\$/{print NR-1;exit}")
+		if [ -z "$ENTRY" ]; then
+			log "Task $TASK needs unavailable kernel $REQ_KREL - skipping"
+			mv $TASK skipped/
+			continue
+		fi
+		log "Task $TASK needs kernel $REQ_KREL - rebooting in $PREREBOOT_SLEEP seconds"
+		mv $TASK pending/
+		sleep $PREREBOOT_SLEEP
+		yes | grub-reboot $ENTRY
+		exit 0
+	fi
+	log "Task $TASK is executed"
+	if ./$TASK; then
+		RESULT=success
+	else
+		RESULT=failure
+	fi
+	log "Task $TASK ended with $RESULT"
+	mv $TASK $RESULT/
+	I=$((I+1))
+
+	sleep $SLEEP_BETWEEN_TASKS
+done
+
+log "Deactivating"

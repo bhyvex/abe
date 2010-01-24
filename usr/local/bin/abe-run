@@ -1,0 +1,13 @@
+#!/bin/sh
+
+# After Boot Executor's special task runner
+# Copyright (C) 2009-10 Przemyslaw Pawelczyk <przemoc@gmail.com>
+
+REQ_KREL=$(echo $1 | sed 's/[ \t]\+.*$//')
+
+if [ "$REQ_KREL" != "run-as-first-task" -a "$REQ_KREL" != $(uname -r) ]; then
+	echo "Your current kernel is different from requested: $REQ_KREL"
+	exit 1
+fi
+
+$(echo $* | sed 's/^[^ \t]*[ \t]*//')
